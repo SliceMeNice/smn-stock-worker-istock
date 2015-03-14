@@ -18,7 +18,7 @@ app.use( bodyParser.json() );
 
 
 app.post( '/go', function ( req, res ) {
-	var message = req.payload;
+	var message = req.body;
 
 	switch ( message.type ) {
 		case 'import':
