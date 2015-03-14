@@ -27,14 +27,22 @@ app.post( '/go', function ( req, res ) {
 
 			switch ( asset.type ) {
 				case 'iStock':
-					return importIstockAssetData( asset.istockId );
+					importIstockAssetData( asset.istockId ).then(
+						function () {
+							res.sendStatus( 200 );
+						},
+						function () {
+							res.sendStatus( 500 );
+						}
+					);
 					break;
 			}
 
 			break;
-	}
 
-	return res.sendStatus( 500 );
+		default:
+			res.sendStatus( 500 );
+	}
 } );
 
 var server = app.listen( process.env.PORT, function () {
@@ -48,26 +56,32 @@ var server = app.listen( process.env.PORT, function () {
 
 
 function importIstockAssetData( istockId ) {
+	var deferred = Q.defer();
+
 	var crawler = new IstockAssetCrawler();
 
 	crawler.collectData( istockId ).then(
 		function ( assetData ) {
+			console.log( assetData );
+
 			putAssetIntoStock( assetData ).then(
 				function () {
 					console.log( 'Done!' );
-					return res.sendStatus( 200 );
+					deferred.resolve();
 				},
 				function () {
 					console.log( 'Failed! :(' );
-					return res.sendStatus( 500 );
+					deferred.reject();
 				}
 			);
 		},
 		function () {
 			// TODO: log
-			return res.sendStatus( 500 );
+			deferred.reject();
 		}
 	);
+
+	return deferred.promise;
 }
 
 function putAssetIntoStock( assetData ) {
