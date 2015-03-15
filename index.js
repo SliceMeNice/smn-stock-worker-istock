@@ -1,16 +1,10 @@
 var bodyParser = require( 'body-parser' );
+var config = require( 'nconf' );
 var express = require( 'express' );
-var nconf = require( 'nconf' );
 var Q = require( 'q' );
 
+config.argv().env();
 
-nconf
-	.argv()
-	.env();
-
-var config = nconf;
-
-var stock = require( './lib/stock.js' )( config );
 var IstockAssetCrawler = require( './lib/istockAssetCrawler.js' );
 
 var app = express();
@@ -27,9 +21,16 @@ app.post( '/go', function ( req, res ) {
 
 			switch ( asset.type ) {
 				case 'iStock':
-					importIstockAssetData( asset.istockId ).then(
-						function () {
-							res.sendStatus( 200 );
+					collectIstockAssetData( asset.istockId ).then(
+						function ( assetData ) {
+							putAssetDataInImporterQueue( assetData ).then(
+								function () {
+									res.sendStatus( 200 );
+								},
+								function () {
+									res.sendStatus( 500 );
+								}
+							)
 						},
 						function () {
 							res.sendStatus( 500 );
@@ -55,25 +56,14 @@ var server = app.listen( process.env.PORT, function () {
 } );
 
 
-function importIstockAssetData( istockId ) {
+function collectIstockAssetData( istockId ) {
 	var deferred = Q.defer();
 
 	var crawler = new IstockAssetCrawler();
 
 	crawler.collectData( istockId ).then(
 		function ( assetData ) {
-			console.log( assetData );
-
-			putAssetIntoStock( assetData ).then(
-				function () {
-					console.log( 'Done!' );
-					deferred.resolve();
-				},
-				function () {
-					console.log( 'Failed! :(' );
-					deferred.reject();
-				}
-			);
+			deferred.resolve( assetData );
 		},
 		function () {
 			// TODO: log
@@ -84,42 +74,48 @@ function importIstockAssetData( istockId ) {
 	return deferred.promise;
 }
 
-function putAssetIntoStock( assetData ) {
+function putAssetDataInImporterQueue( assetData ) {
 	var deferred = Q.defer();
 
-	stock.findOrCreateAsset( assetData ).then(
-		function ( asset ) {
-
-			var tagPromises = [];
-
-			assetData.tags.forEach( function ( tagName ) {
-
-				var promise = stock.findOrCreateTag( tagName ).then(
-					function ( tag ) {
-
-						stock.addTagToAsset( tag, asset ).fail( function ( response ) {
-							// TODO: log
-						} );
-
-					},
-					function ( response ) {
-						// TODO: log
-					}
-				);
-
-				tagPromises.push( promise );
-			} );
-
-			Q.allSettled( tagPromises ).then( function () {
-				deferred.resolve();
-			} );
-
+	sendSqsMessage( JSON.stringify( assetData ) ).then(
+		function () {
+			deferred.resolve();
 		},
-		function ( response ) {
-			// TODO: log
+		function () {
 			deferred.reject();
 		}
 	);
+
+	return deferred.promise;
+}
+
+function sendSqsMessage( messageBody ) {
+	var deferred = Q.defer();
+
+	AWS.config.update( {
+		accessKeyId:     config.get( 'AWS_ACCESS_KEY_ID' ),
+		secretAccessKey: config.get( 'AWS_SECRET_KEY' ),
+		region:          config.get( 'AWS_IMPORTER_QUEUE_REGION' )
+	} );
+
+	var sqs = new AWS.SQS();
+
+	var params = {
+		MessageBody:  messageBody || '',
+		QueueUrl:     config.get( 'AWS_IMPORTER_QUEUE_URL' ),
+		DelaySeconds: 0
+	};
+
+	sqs.sendMessage( params, function ( err, data ) {
+		if ( err ) {
+			console.log( err, err.stack );
+			deferred.reject( err );
+		} // an error occurred
+		else {
+			console.log( 'Message sent to SQS: ' + params.MessageBody );
+			deferred.resolve();
+		}
+	} );
 
 	return deferred.promise;
 }
